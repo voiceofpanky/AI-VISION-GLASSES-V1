@@ -20,6 +20,7 @@ Edge vs cloud tradeoffs: Use smart offloading (some tasks on-device, some on ser
 
 ## Demo App:
 
+![DEVELOP-IMAGE AND OBJECT DETECTION HUGGINGFACE API](image-3.png)
 ![alt text](image-1.png) ![mock result text to speech](image-2.png)
 
 ## Running the App on Web (React Native Web)
