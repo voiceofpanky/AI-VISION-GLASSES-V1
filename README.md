@@ -16,9 +16,10 @@ Latency & real-time: Those repos often serve as proofs-of-concept; improving inf
 Audio feedback design: The way the system speaks (timing, priority, phrasing) matters a lot for usability.
 
 Edge vs cloud tradeoffs: Use smart offloading (some tasks on-device, some on server) as in the iEARS project.
-
+![AI for humanity](image.png)
 
 Demo App:
+![alt text](image-1.png)
 
 ## Running the App on Web (React Native Web)
 
