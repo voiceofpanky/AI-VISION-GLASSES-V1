@@ -20,7 +20,7 @@ Edge vs cloud tradeoffs: Use smart offloading (some tasks on-device, some on ser
 
 ## Demo App:
 
-![alt text](image-1.png)
+![alt text](image-1.png) ![mock result text to speech](image-2.png)
 
 ## Running the App on Web (React Native Web)
 
