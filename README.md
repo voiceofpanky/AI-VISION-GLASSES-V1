@@ -18,7 +18,8 @@ Audio feedback design: The way the system speaks (timing, priority, phrasing) ma
 Edge vs cloud tradeoffs: Use smart offloading (some tasks on-device, some on server) as in the iEARS project.
 ![AI for humanity](image.png)
 
-Demo App:
+## Demo App:
+
 ![alt text](image-1.png)
 
 ## Running the App on Web (React Native Web)
