@@ -1,31 +1,50 @@
+/*
+React Native (Expo/Snack-safe) App: AI Assistive Glasses with Object Detection & Audio Description
 
-import React, { useState } from 'react';
-import { SafeAreaView, View, Text, TouchableOpacity, ScrollView, ActivityIndicator, StyleSheet, TextInput, Platform } from 'react-native';
+GOAL:
+- Allow user to upload/take a picture (upload or camera capture).
+- Detect objects in the uploaded/captured image and convert them into natural language audio descriptions.
+- Fully bundler-safe for Expo Snack/web.
+- Mock mode included for testing without native device features.
+- Preconfigured with Hugging Face OwlViT object detection API endpoint.
+*/
 
-// ---------------- CONFIG -----------------
-const DEFAULT_USE_MOCK_BACKEND = true; // safe default for Snack / web
-const DEFAULT_SEND_AS_FORMDATA = false; // set true if your server expects multipart/form-data
+import React, { useState, useRef } from 'react';
+import { SafeAreaView, ScrollView, View, Text, TouchableOpacity, TextInput, ActivityIndicator, StyleSheet, Platform, Image } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { Camera } from 'expo-camera';
+
+const DEFAULT_USE_MOCK = true;
+// Hugging Face OwlViT API endpoint
+const DEFAULT_SERVER_URL = 'https://api-inference.huggingface.co/models/google/owlvit-base-patch32';
+const HUGGINGFACE_API_KEY = 'YOUR_HUGGINGFACE_API_KEY';
 
 export default function App() {
-  const [useMock, setUseMock] = useState(DEFAULT_USE_MOCK_BACKEND);
-  const [sendAsFormData, setSendAsFormData] = useState(DEFAULT_SEND_AS_FORMDATA);
-  const [endpoint, setEndpoint] = useState('');
+  const [useMock, setUseMock] = useState(DEFAULT_USE_MOCK);
+  const [endpoint, setEndpoint] = useState(DEFAULT_SERVER_URL);
   const [processing, setProcessing] = useState(false);
   const [resultText, setResultText] = useState('');
-  const [tests, setTests] = useState([]);
   const [lastError, setLastError] = useState(null);
+  const [image, setImage] = useState(null);
+  const [hasPermission, setHasPermission] = useState(null);
+  const [showCamera, setShowCamera] = useState(false);
+  const cameraRef = useRef(null);
 
-  // Text-to-speech: web-friendly fallback + console fallback
+  React.useEffect(() => {
+    (async () => {
+      const { status } = await Camera.requestCameraPermissionsAsync();
+      setHasPermission(status === 'granted');
+    })();
+  }, []);
+
   const speakText = (text) => {
     if (!text) return;
     try {
-      if (Platform.OS === 'web' && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        const utter = new window.SpeechSynthesisUtterance(text);
+      if (Platform.OS === 'web' && 'speechSynthesis' in window) {
+        const utter = new SpeechSynthesisUtterance(text);
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utter);
       } else {
-        // On native (or when Web Speech not available) we just console log —
-        // you can later enable expo-speech in App.native.js
         console.log('TTS (mock):', text);
       }
     } catch (err) {
@@ -33,25 +52,45 @@ export default function App() {
     }
   };
 
-  // Main analyzer function.
-  // Returns the spoken description string.
-  async function analyzeImage(base64, { forceMock } = {}) {
-    const useMockMode = typeof forceMock === 'boolean' ? forceMock : useMock;
+  async function pickImage() {
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      base64: true,
+    });
+
+    if (!result.canceled) {
+      const asset = result.assets[0];
+      setImage(asset.uri);
+      detectObjectsAndSpeak(asset.base64);
+    }
+  }
+
+  async function captureImage() {
+    if (cameraRef.current) {
+      const photo = await cameraRef.current.takePictureAsync({ base64: true });
+      setShowCamera(false);
+      setImage(photo.uri);
+      detectObjectsAndSpeak(photo.base64);
+    }
+  }
+
+  async function detectObjectsAndSpeak(base64, { forceMock } = {}) {
+    const activeMock = typeof forceMock === 'boolean' ? forceMock : useMock;
     setLastError(null);
     setResultText('');
 
-    if (useMockMode) {
+    if (activeMock) {
       setProcessing(true);
-      await new Promise((r) => setTimeout(r, 500));
-      const mock = "Mock: person 2m ahead, chair to your right, sign reads 'Exit'.";
-      setResultText(mock);
-      speakText(mock);
+      await new Promise(r => setTimeout(r, 500));
+      const mockResult = "Mock: Detected a dog on the left, a ball in front, and a tree in the background.";
+      setResultText(mockResult);
+      speakText(mockResult);
       setProcessing(false);
-      return mock;
+      return mockResult;
     }
 
     if (!endpoint) {
-      const msg = 'No endpoint configured. Set endpoint URL and disable mock mode to call your server.';
+      const msg = 'No endpoint configured. Set endpoint URL and disable mock mode.';
       setResultText(msg);
       speakText(msg);
       return msg;
@@ -59,126 +98,89 @@ export default function App() {
 
     try {
       setProcessing(true);
-      const prompt = `You are an assistant for visually impaired users. Provide a short, prioritized spoken description of the scene. Include detected objects, text (if any) and useful navigation cues. Keep it concise (max 40 words). Prioritize immediate obstacles and person presence.`;
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${HUGGINGFACE_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          inputs: base64,
+        })
+      });
 
-      let resp;
-      if (sendAsFormData) {
-        // FormData path — many servers accept this, but beware CORS in web
-        const fd = new FormData();
-        fd.append('image_base64', base64 || '');
-        fd.append('prompt', prompt);
-        resp = await fetch(endpoint, { method: 'POST', body: fd });
-      } else {
-        const payload = { image_base64: base64 || '', prompt };
-        resp = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      }
-
-      if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error(`Server error ${resp.status}: ${t}`);
-      }
+      if (!resp.ok) throw new Error(`Server returned status ${resp.status}`);
       const json = await resp.json();
-      const spoken = json?.spoken_text || json?.text || 'No description available.';
+
+      let objects = [];
+      if (Array.isArray(json) && json[0]?.labels) {
+        objects = json[0].labels;
+      }
+
+      const spoken = objects.length > 0 ? `Detected: ${objects.join(', ')}` : 'No objects detected.';
       setResultText(spoken);
       speakText(spoken);
       setProcessing(false);
       return spoken;
     } catch (err) {
-      console.error('analyzeImage failed', err);
+      console.error('detectObjectsAndSpeak failed', err);
       setLastError(String(err));
-      setResultText('Analysis failed. See debug.');
+      setResultText('Analysis failed.');
       setProcessing(false);
-      return `Analysis failed: ${err?.message || String(err)}`;
+      return `Analysis failed: ${err.message || String(err)}`;
     }
   }
 
-  // --------------- TESTS ------------------
-  // Two basic tests added as internal test cases: (1) Mock behavior, (2) No-endpoint message
-  async function runTests() {
-    setTests([]);
-    const results = [];
+  if (showCamera) {
+    if (hasPermission === null) return <View />;
+    if (hasPermission === false) return <Text>No access to camera</Text>;
 
-    // Test 1: Mock mode returns string starting with 'Mock:'
-    try {
-      const r = await analyzeImage('dummy-base64', { forceMock: true });
-      const pass = typeof r === 'string' && r.startsWith('Mock:');
-      results.push({ name: 'Mock backend returns expected string', pass, output: r });
-    } catch (e) {
-      results.push({ name: 'Mock backend returns expected string', pass: false, output: String(e) });
-    }
-
-    // Test 2: When not using mock and no endpoint configured -> helpful message returned
-    try {
-      const r = await analyzeImage('dummy-base64', { forceMock: false });
-      const pass = typeof r === 'string' && r.includes('No endpoint configured');
-      results.push({ name: 'No-endpoint yields helpful message', pass, output: r });
-    } catch (e) {
-      results.push({ name: 'No-endpoint yields helpful message', pass: false, output: String(e) });
-    }
-
-    setTests(results);
-    return results;
+    return (
+      <Camera style={{ flex: 1 }} ref={cameraRef}>
+        <View style={{ flex: 1, justifyContent: 'flex-end', marginBottom: 36 }}>
+          <TouchableOpacity style={styles.button} onPress={captureImage}>
+            <Text style={styles.buttonText}>Capture</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.button, { marginTop: 10 }]} onPress={() => setShowCamera(false)}>
+            <Text style={styles.buttonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </Camera>
+    );
   }
 
-  // UI actions
-  const onRunMock = async () => {
-    await analyzeImage('dummy-base64', { forceMock: true });
-  };
-
-  const onCallEndpoint = async () => {
-    await analyzeImage('dummy-base64', { forceMock: false });
-  };
-
-  // ----------------- RENDER -----------------
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={{ padding: 16 }}>
-        <Text style={styles.title}>AI Assistive Glasses — Demo</Text>
+        <Text style={styles.title}>AI Assistive Glasses — Upload/Capture & Detect Objects</Text>
 
         <View style={{ marginVertical: 8 }}>
           <Text style={styles.label}>Mode</Text>
           <View style={{ flexDirection: 'row', marginTop: 6 }}>
-            <TouchableOpacity style={[styles.smallButton, useMock ? styles.smallButtonActive : null]} onPress={() => setUseMock(true)}>
+            <TouchableOpacity style={[styles.smallButton, useMock && styles.smallButtonActive]} onPress={() => setUseMock(true)}>
               <Text style={styles.smallButtonText}>Mock</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.smallButton, !useMock ? styles.smallButtonActive : null]} onPress={() => setUseMock(false)}>
-              <Text style={styles.smallButtonText}>Call Endpoint</Text>
+            <TouchableOpacity style={[styles.smallButton, !useMock && styles.smallButtonActive]} onPress={() => setUseMock(false)}>
+              <Text style={styles.smallButtonText}>Call HF Endpoint</Text>
             </TouchableOpacity>
           </View>
         </View>
 
         <View style={{ marginVertical: 8 }}>
-          <Text style={styles.label}>Endpoint (leave empty for mock)</Text>
-          <TextInput
-            value={endpoint}
-            onChangeText={setEndpoint}
-            placeholder="https://your-server.example.com/vision"
-            style={styles.input}
-            autoCapitalize="none"
-          />
+          <Text style={styles.label}>Endpoint</Text>
+          <TextInput value={endpoint} onChangeText={setEndpoint} placeholder="https://server.url" style={styles.input} autoCapitalize="none" />
         </View>
 
         <View style={{ marginVertical: 8 }}>
-          <TouchableOpacity style={styles.button} onPress={onRunMock}>
-            <Text style={styles.buttonText}>Run Mock Description</Text>
+          <TouchableOpacity style={styles.button} onPress={pickImage}>
+            <Text style={styles.buttonText}>Upload Image & Detect</Text>
           </TouchableOpacity>
-
-          <View style={{ height: 8 }} />
-
-          <TouchableOpacity style={styles.button} onPress={onCallEndpoint}>
-            <Text style={styles.buttonText}>Call Endpoint (with current endpoint)</Text>
-          </TouchableOpacity>
-
-          <View style={{ height: 8 }} />
-
-          <TouchableOpacity style={styles.buttonSecondary} onPress={async () => { setTests([]); setProcessing(true); await runTests(); setProcessing(false); }}>
-            <Text style={styles.buttonSecondaryText}>Run Tests</Text>
+          <TouchableOpacity style={[styles.button, { marginTop: 10 }]} onPress={() => setShowCamera(true)}>
+            <Text style={styles.buttonText}>Capture with Camera</Text>
           </TouchableOpacity>
         </View>
+
+        {image && <Image source={{ uri: image }} style={{ width: '100%', height: 200, marginTop: 12, borderRadius: 10 }} />}
 
         <View style={{ marginVertical: 12 }}>
           <Text style={styles.label}>Result</Text>
@@ -187,25 +189,6 @@ export default function App() {
           </View>
           {lastError ? <Text style={{ color: 'salmon', marginTop: 8 }}>{lastError}</Text> : null}
         </View>
-
-        <View style={{ marginVertical: 12 }}>
-          <Text style={styles.label}>Tests</Text>
-          {tests.length === 0 ? <Text style={styles.hint}>No tests run yet — click Run Tests.</Text> : (
-            tests.map((t, i) => (
-              <View key={i} style={{ marginTop: 8 }}>
-                <Text style={{ color: t.pass ? '#8f8' : 'salmon', fontWeight: '700' }}>{t.pass ? 'PASS' : 'FAIL'} — {t.name}</Text>
-                <Text style={styles.monotext}>{t.output}</Text>
-              </View>
-            ))
-          )}
-        </View>
-
-        <View style={{ marginTop: 24 }}>
-          <Text style={styles.footer}>Notes:</Text>
-          <Text style={styles.hint}>• This file intentionally avoids any native expo imports to be Snack/web-friendly.
-          • If you want full camera + speech integration on mobile, ask me to generate <Text style={{ fontWeight: '700' }}>App.native.js</Text> that uses expo-camera, expo-image-picker, and expo-speech — that file will not be used on web builds and avoids bundling errors.</Text>
-        </View>
-
       </ScrollView>
     </SafeAreaView>
   );
@@ -218,14 +201,9 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#222', color: '#fff', padding: 10, marginTop: 6, borderRadius: 8 },
   button: { backgroundColor: '#007aff', padding: 12, borderRadius: 10, alignItems: 'center' },
   buttonText: { color: '#fff', fontWeight: '700' },
-  buttonSecondary: { backgroundColor: '#333', padding: 10, borderRadius: 8, alignItems: 'center' },
-  buttonSecondaryText: { color: '#fff', fontWeight: '600' },
   smallButton: { backgroundColor: '#222', padding: 8, borderRadius: 8, marginRight: 8 },
   smallButtonActive: { backgroundColor: '#007aff' },
   smallButtonText: { color: '#fff' },
   resultBox: { backgroundColor: '#000', padding: 12, borderRadius: 8, marginTop: 8, minHeight: 60 },
   resultText: { color: '#e6e6e6' },
-  monotext: { color: '#aaa', marginTop: 6 },
-  hint: { color: '#aaa', marginTop: 6 },
-  footer: { color: '#fff', fontWeight: '700' }
 });
